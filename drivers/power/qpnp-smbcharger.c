@@ -456,7 +456,7 @@ module_param_named(
 	int, S_IRUSR | S_IWUSR
 );
 
-static int smbchg_default_dcp_icl_ma = 1800;
+static int smbchg_default_dcp_icl_ma = 2000;
 module_param_named(
 	default_dcp_icl_ma, smbchg_default_dcp_icl_ma,
 	int, S_IRUSR | S_IWUSR
@@ -1175,6 +1175,19 @@ static int get_prop_batt_health(struct smbchg_chip *chip)
 		return POWER_SUPPLY_HEALTH_GOOD;
 }
 
+#ifndef CONFIG_QPNP_LEGACY_CYCLE_COUNT
+static int get_prop_batt_cycle_count(struct smbchg_chip *chip)
+{
+    int cycles, rc;
+    rc = get_property_from_fg(chip, POWER_SUPPLY_PROP_CYCLE_COUNT, &cycles);
+    if (rc) {
+	pr_smb(PR_STATUS, "Couldn't get cycle count rc = %d\n", rc);
+	cycles = 0;
+    }
+    return cycles;
+}
+#endif
+
 static void get_property_from_typec(struct smbchg_chip *chip,
 				enum power_supply_property property,
 				union power_supply_propval *prop)
@@ -1617,15 +1630,15 @@ static int smbchg_set_high_usb_chg_current(struct smbchg_chip *chip,
 
 		rc = smbchg_masked_write(chip, chip->usb_chgpth_base + CMD_IL,
 			USBIN_MODE_CHG_BIT | USB51_MODE_BIT | ICL_OVERRIDE_BIT,
-			USBIN_LIMITED_MODE | USB51_100MA | ICL_OVERRIDE_BIT);
+			USBIN_LIMITED_MODE | USB51_500MA | ICL_OVERRIDE_BIT);
 		if (rc < 0) {
 			pr_err("Couldn't set ICL_OVERRIDE rc=%d\n", rc);
 			return rc;
 		}
 
 		pr_smb(PR_STATUS,
-			"Forcing 100mA current limit\n");
-		chip->usb_max_current_ma = CURRENT_100_MA;
+			"Forcing 500mA current limit\n");
+		chip->usb_max_current_ma = CURRENT_500_MA;
 		return rc;
 	}
 
@@ -1634,19 +1647,19 @@ static int smbchg_set_high_usb_chg_current(struct smbchg_chip *chip,
 	if (i < 0) {
 		dev_err(chip->dev,
 			"Cannot find %dma current_table using %d\n",
-			current_ma, CURRENT_150_MA);
+			current_ma, CURRENT_500_MA);
 
 		rc = smbchg_sec_masked_write(chip,
 					chip->usb_chgpth_base + CHGPTH_CFG,
-					CFG_USB_2_3_SEL_BIT, CFG_USB_3);
+					CFG_USB_2_3_SEL_BIT, CFG_USB_2);
 		rc |= smbchg_masked_write(chip, chip->usb_chgpth_base + CMD_IL,
 					USBIN_MODE_CHG_BIT | USB51_MODE_BIT,
-					USBIN_LIMITED_MODE | USB51_100MA);
+					USBIN_LIMITED_MODE | USB51_500MA);
 		if (rc < 0)
 			dev_err(chip->dev, "Couldn't set %dmA rc=%d\n",
 					CURRENT_150_MA, rc);
 		else
-			chip->usb_max_current_ma = 150;
+			chip->usb_max_current_ma = 500;
 		return rc;
 	}
 
@@ -1689,7 +1702,7 @@ static int smbchg_set_usb_current_max(struct smbchg_chip *chip,
 	}
 	pr_smb(PR_STATUS, "USB current_ma = %d\n", current_ma);
 
-	if (current_ma <= SUSPEND_CURRENT_MA) {
+	if (current_ma == SUSPEND_CURRENT_MA) {
 		/* suspend the usb if current <= 2mA */
 		rc = vote(chip->usb_suspend_votable, USB_EN_VOTER, true, 0);
 		chip->usb_max_current_ma = 0;
@@ -1702,7 +1715,7 @@ static int smbchg_set_usb_current_max(struct smbchg_chip *chip,
 	case POWER_SUPPLY_TYPE_USB:
 		if ((current_ma < CURRENT_150_MA) &&
 				(chip->wa_flags & SMBCHG_USB100_WA))
-			current_ma = CURRENT_150_MA;
+			current_ma = CURRENT_500_MA;
 
 		/* handle special SDP case when USB reports high current */
 		if (current_ma > CURRENT_900_MA) {
@@ -1745,7 +1758,7 @@ static int smbchg_set_usb_current_max(struct smbchg_chip *chip,
 			rc = smbchg_masked_write(chip,
 					chip->usb_chgpth_base + CMD_IL,
 					USBIN_MODE_CHG_BIT | USB51_MODE_BIT,
-					USBIN_LIMITED_MODE | USB51_100MA);
+					USBIN_LIMITED_MODE | USB51_500MA);
 			if (rc < 0) {
 				pr_err("Couldn't set CMD_IL rc = %d\n", rc);
 				goto out;
@@ -1756,7 +1769,7 @@ static int smbchg_set_usb_current_max(struct smbchg_chip *chip,
 		if (current_ma == CURRENT_150_MA) {
 			rc = smbchg_sec_masked_write(chip,
 					chip->usb_chgpth_base + CHGPTH_CFG,
-					CFG_USB_2_3_SEL_BIT, CFG_USB_3);
+					CFG_USB_2_3_SEL_BIT, CFG_USB_2);
 			if (rc < 0) {
 				pr_err("Couldn't set CHGPTH_CFG rc = %d\n", rc);
 				goto out;
@@ -1764,7 +1777,7 @@ static int smbchg_set_usb_current_max(struct smbchg_chip *chip,
 			rc = smbchg_masked_write(chip,
 					chip->usb_chgpth_base + CMD_IL,
 					USBIN_MODE_CHG_BIT | USB51_MODE_BIT,
-					USBIN_LIMITED_MODE | USB51_100MA);
+					USBIN_LIMITED_MODE | USB51_500MA);
 			if (rc < 0) {
 				pr_err("Couldn't set CMD_IL rc = %d\n", rc);
 				goto out;
@@ -2585,8 +2598,8 @@ static void smbchg_parallel_usb_en_work(struct work_struct *work)
 	return;
 
 recheck:
-	chip->parallel.parallel_en_in_progress = false;
-	schedule_delayed_work(&chip->parallel_en_work, 0);
+	queue_delayed_work(system_power_efficient_wq,
+		&chip->parallel_en_work, 0);
 }
 
 static void smbchg_parallel_usb_check_ok(struct smbchg_chip *chip)
@@ -2602,7 +2615,8 @@ static void smbchg_parallel_usb_check_ok(struct smbchg_chip *chip)
 	}
 
 	smbchg_stay_awake(chip, PM_PARALLEL_CHECK);
-	schedule_delayed_work(&chip->parallel_en_work, 0);
+	queue_delayed_work(system_power_efficient_wq,
+		&chip->parallel_en_work, 0);
 }
 
 static int charging_suspend_vote_cb(struct votable *votable, void *data,
@@ -3538,7 +3552,8 @@ static void smbchg_vfloat_adjust_check(struct smbchg_chip *chip)
 
 	smbchg_stay_awake(chip, PM_REASON_VFLOAT_ADJUST);
 	pr_smb(PR_STATUS, "Starting vfloat adjustments\n");
-	schedule_delayed_work(&chip->vfloat_adjust_work, 0);
+	queue_delayed_work(system_power_efficient_wq,
+		&chip->vfloat_adjust_work, 0);
 }
 
 #define FV_STS_REG			0xC
@@ -4614,8 +4629,9 @@ stop:
 	return;
 
 reschedule:
-	schedule_delayed_work(&chip->vfloat_adjust_work,
-			msecs_to_jiffies(VFLOAT_RESAMPLE_DELAY_MS));
+	queue_delayed_work(system_power_efficient_wq,
+		&chip->vfloat_adjust_work,
+		msecs_to_jiffies(VFLOAT_RESAMPLE_DELAY_MS));
 	return;
 }
 
@@ -4664,7 +4680,7 @@ static int smbchg_set_optimal_charging_mode(struct smbchg_chip *chip, int type)
 	return 0;
 }
 
-#define DEFAULT_SDP_MA		100
+#define DEFAULT_SDP_MA		500
 #define DEFAULT_CDP_MA		1500
 static int smbchg_change_usb_supply_type(struct smbchg_chip *chip,
 						enum power_supply_type type)
@@ -4943,7 +4959,7 @@ static void handle_usb_removal(struct smbchg_chip *chip)
 	/* cancel/wait for hvdcp pending work if any */
 	cancel_delayed_work_sync(&chip->hvdcp_det_work);
 	smbchg_relax(chip, PM_DETECT_HVDCP);
-	smbchg_change_usb_supply_type(chip, POWER_SUPPLY_TYPE_UNKNOWN);
+	smbchg_change_usb_supply_type(chip, POWER_SUPPLY_TYPE_USB);
 
 	if (chip->parallel.use_parallel_aicl) {
 		complete_all(&chip->hvdcp_det_done);
@@ -5067,8 +5083,9 @@ static void handle_usb_insertion(struct smbchg_chip *chip)
 			(usb_supply_type == POWER_SUPPLY_TYPE_USB_DCP)) {
 		cancel_delayed_work_sync(&chip->hvdcp_det_work);
 		smbchg_stay_awake(chip, PM_DETECT_HVDCP);
-		schedule_delayed_work(&chip->hvdcp_det_work,
-					msecs_to_jiffies(HVDCP_NOTIFY_MS));
+		queue_delayed_work(system_power_efficient_wq,
+			&chip->hvdcp_det_work,
+			msecs_to_jiffies(HVDCP_NOTIFY_MS));
 		if (chip->parallel.use_parallel_aicl) {
 			reinit_completion(&chip->hvdcp_det_done);
 			pr_smb(PR_MISC, "init hvdcp_det_done\n");
@@ -5240,10 +5257,10 @@ static void increment_aicl_count(struct smbchg_chip *chip)
 
 			/* Vote 100mA current limit */
 			rc = vote(chip->usb_icl_votable, WEAK_CHARGER_ICL_VOTER,
-					true, CURRENT_100_MA);
+					true, CURRENT_500_MA);
 			if (rc < 0) {
 				pr_err("Can't vote %d current limit rc=%d\n",
-					CURRENT_100_MA, rc);
+					CURRENT_500_MA, rc);
 			}
 
 			chip->aicl_irq_count = 0;
@@ -5408,7 +5425,8 @@ static void smbchg_handle_hvdcp3_disable(struct smbchg_chip *chip)
 		read_usb_type(chip, &usb_type_name, &usb_supply_type);
 		smbchg_change_usb_supply_type(chip, usb_supply_type);
 		if (usb_supply_type == POWER_SUPPLY_TYPE_USB_DCP) {
-			schedule_delayed_work(&chip->hvdcp_det_work,
+			queue_delayed_work(system_power_efficient_wq,
+				&chip->hvdcp_det_work,
 				msecs_to_jiffies(HVDCP_NOTIFY_MS));
 			if (chip->parallel.use_parallel_aicl) {
 				reinit_completion(&chip->hvdcp_det_done);
@@ -6201,6 +6219,9 @@ static enum power_supply_property smbchg_battery_properties[] = {
 	POWER_SUPPLY_PROP_VOLTAGE_NOW,
 	POWER_SUPPLY_PROP_RESISTANCE_ID,
 	POWER_SUPPLY_PROP_CHARGE_FULL,
+#ifndef CONFIG_QPNP_LEGACY_CYCLE_COUNT
+	POWER_SUPPLY_PROP_CYCLE_COUNT,
+#endif
 	POWER_SUPPLY_PROP_SAFETY_TIMER_ENABLE,
 	POWER_SUPPLY_PROP_INPUT_CURRENT_MAX,
 	POWER_SUPPLY_PROP_INPUT_CURRENT_SETTLED,
@@ -6447,6 +6468,11 @@ static int smbchg_battery_get_property(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_MAX_PULSE_ALLOWED:
 		val->intval = chip->max_pulse_allowed;
 		break;
+#ifndef CONFIG_QPNP_LEGACY_CYCLE_COUNT
+	case POWER_SUPPLY_PROP_CYCLE_COUNT:
+		val->intval = get_prop_batt_cycle_count(chip);
+		break;
+#endif
 	default:
 		return -EINVAL;
 	}
@@ -8518,7 +8544,8 @@ static void rerun_hvdcp_det_if_necessary(struct smbchg_chip *chip)
 		if (!chip->hvdcp_not_supported) {
 			cancel_delayed_work_sync(&chip->hvdcp_det_work);
 			smbchg_stay_awake(chip, PM_DETECT_HVDCP);
-			schedule_delayed_work(&chip->hvdcp_det_work,
+			queue_delayed_work(system_power_efficient_wq,
+					&chip->hvdcp_det_work,
 					msecs_to_jiffies(HVDCP_NOTIFY_MS));
 		}
 	}
