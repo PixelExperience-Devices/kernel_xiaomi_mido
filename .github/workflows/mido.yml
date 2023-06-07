@@ -1,0 +1,23 @@
+name: mido-main
+on:
+   workflow_dispatch:
+
+jobs:
+  hyperbuild:
+       runs-on: ubuntu-latest
+       
+       steps:
+       - name: Creating env!
+         uses: actions/checkout@v2
+         
+       - name: Setting up env!
+         run: |
+              sudo -E apt-get -qq update
+              sudo -E apt-get -qq install git make bc bison -y ccache \
+              openssl zip kmod cpio flex libelf-dev curl \
+              libssl-dev libtfm-dev wget device-tree-compiler \
+              ca-certificates python3 python2 binutils \
+              binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi
+       - name: Building Kernel...
+         run: |
+             chmod +x build.sh && bash build.sh
